@@ -1,0 +1,116 @@
+#!/usr/bin/env java --enable-preview --source 23
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.text.DecimalFormat;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public long calculateSize(Path path) {
+    if (path == null || !Files.exists(path)) {
+        return 0L;
+    }
+
+    try {
+        if (Files.isDirectory(path)) {
+            try(Stream<Path> stream = Files.walk(path)) {
+
+                return stream
+                        .filter(Files::isRegularFile)
+                        .mapToLong(p -> {
+                            try {
+                                return Files.size(p);
+                            } catch (IOException e) {
+                                return 0L;
+                            }
+                        })
+                        .sum();
+            }
+
+        } else {
+            return Files.size(path);
+        }
+    } catch (IOException e) {
+        throw new RuntimeException("Error calculating size for: " + path, e);
+    }
+}
+
+public String humanReadableSize(long bytes) {
+    if (bytes <= 0) {
+        return "0 B";
+    }
+
+    final String[] units = new String[] { "B", "KB", "MB", "GB", "TB", "PB", "EB" };
+    int digitGroups = (int) (Math.log10(Math.max(1, bytes)) / Math.log10(1024));
+
+    // Stay within array bounds
+    digitGroups = Math.min(digitGroups, units.length - 1);
+
+    DecimalFormat df = new DecimalFormat("#,##0.##");
+    return df.format(bytes / Math.pow(1024, digitGroups)) + " " + units[digitGroups];
+}
+
+public void searchDirectories(Path startPath, Predicate<Path> criteria, Consumer<Path> action) {
+    try {
+        if (startPath == null || !Files.isDirectory(startPath) ||
+                startPath.getFileName().toString().startsWith(".") || startPath.toString().contains("/Library")) {
+            return;
+        }
+
+        if (criteria.test(startPath)) {
+            action.accept(startPath);
+            return;
+        }
+
+        try (Stream<Path> stream = Files.list(startPath)) {
+            stream.filter(Files::isDirectory)
+                    .forEach(subDir -> searchDirectories(subDir, criteria, action));
+        } catch (IOException e) {
+            // Just ignore it
+        }
+
+    } catch (Exception e) {
+        // Silently continue
+    }
+}
+
+public Path getUserHomeDirectory() {
+    return Path.of(System.getProperty("user.home"));
+}
+
+public  boolean isNodeModulesDirectory(Path path) {
+    if (path == null) {
+        return false;
+    }
+    String dirName = path.getFileName().toString();
+    return Files.isDirectory(path) && "node_modules".equals(dirName);
+}
+
+
+void main(String... args) {
+    Map<Path, Long> results = new HashMap<>();;
+
+    System.out.println("Scanning for node_modules directories...");
+
+    searchDirectories(
+            getUserHomeDirectory(),
+            this::isNodeModulesDirectory,
+            path -> {
+                results.put(path, calculateSize(path));
+            }
+    );
+
+
+    System.out.println("Found node_modules:");
+    results.entrySet()
+            .stream()
+            .sorted((a, b) -> Math.toIntExact(b.getValue() - a.getValue()))
+            .forEach(e -> System.out.printf("%s (%s)\n", e.getKey(), humanReadableSize(e.getValue())));
+
+    long totalNodeModulesSize = results.values().stream().collect(Collectors.summarizingLong(Long::longValue)).getSum();
+    System.out.printf("\n\nTotal space used: %s\n", humanReadableSize(totalNodeModulesSize));
+}
